@@ -1,0 +1,36 @@
+services:
+  container1-sensor:
+    build:
+      context: ./container1-sensor
+      dockerfile: Dockerfile
+    container_name: container1-sensor
+    restart: unless-stopped
+    networks:
+      - opcua-network
+    depends_on:
+      - container2-gateway
+
+  container2-gateway:
+    build:
+      context: ./container2-gateway
+      dockerfile: Dockerfile
+    container_name: container2-gateway
+    restart: unless-stopped
+    networks:
+      - opcua-network
+    depends_on:
+      - mqtt-broker
+
+  mqtt-broker:
+    image: eclipse-mosquitto:latest
+    container_name: mqtt-broker
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    ports:
+      - "1883:1883"
+    networks:
+      - opcua-network
+
+networks:
+  opcua-network:
+    name: opcua-network
