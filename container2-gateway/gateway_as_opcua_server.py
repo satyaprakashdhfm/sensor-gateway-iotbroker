@@ -6,9 +6,13 @@ import paho.mqtt.client as mqtt
 import socket
 import threading
 
-# Configure logging with detailed output
+# Configure logging with detailed output for our own logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Suppress natural logs from imported libraries by setting their log level to CRITICAL
+logging.getLogger("opcua").setLevel(logging.CRITICAL)
+logging.getLogger("paho").setLevel(logging.CRITICAL)
 
 # OPC UA server settings
 SERVER_ENDPOINT = "opc.tcp://0.0.0.0:4840"
@@ -31,15 +35,17 @@ def on_connect(client, userdata, flags, rc, properties=None):
     global mqtt_connected
     if rc == 0:
         mqtt_connected = True
-        logger.info(f"Connected to MQTT broker at {resolved_broker}:{MQTT_PORT}")
+        logger.info(f"[MQTT CONNECT] Successfully connected to MQTT broker at {resolved_broker}:{MQTT_PORT}")
     else:
-        logger.warning(f"Failed to connect to MQTT broker, return code: {rc}")
+        logger.warning(f"[MQTT CONNECT] Connection failed with return code: {rc}")
 
 def on_disconnect(client, userdata, rc, properties=None):
     global mqtt_connected
     mqtt_connected = False
     if rc != 0:
-        logger.warning(f"Unexpected disconnection from MQTT broker (rc={rc})")
+        logger.warning(f"[MQTT DISCONNECT] Unexpected disconnection from MQTT broker (rc={rc})")
+    else:
+        logger.info("[MQTT DISCONNECT] Disconnected from MQTT broker gracefully.")
 
 def create_mqtt_client():
     client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True, protocol=mqtt.MQTTv311)
@@ -52,36 +58,37 @@ def mqtt_connection_manager(client):
     # Resolve MQTT_BROKER hostname
     try:
         resolved = socket.gethostbyname(MQTT_BROKER)
-        logger.info(f"Resolved MQTT broker '{MQTT_BROKER}' to {resolved}")
+        logger.info(f"[MQTT RESOLVE] Resolved broker '{MQTT_BROKER}' to {resolved}")
     except Exception as e:
-        logger.warning(f"Failed to resolve MQTT broker '{MQTT_BROKER}': {e}")
+        logger.warning(f"[MQTT RESOLVE] Failed to resolve broker '{MQTT_BROKER}': {e}")
         resolved = MQTT_BROKER  # Fallback
     global resolved_broker
     resolved_broker = resolved  # Save globally for logging
 
     # Start the MQTT network loop once
     client.loop_start()
-    
+    logger.info("[MQTT LOOP] MQTT network loop started.")
+
     while True:
         if not mqtt_connected:
             try:
-                logger.info(f"Attempting MQTT connection to {resolved}:{MQTT_PORT}")
+                logger.info(f"[MQTT CONNECT ATTEMPT] Trying to connect to {resolved}:{MQTT_PORT}")
                 client.connect(resolved, MQTT_PORT, keepalive=60)
-                time.sleep(5)  # Give some time for on_connect callback
+                time.sleep(5)  # Allow time for the on_connect callback
             except Exception as e:
-                logger.error(f"MQTT connection attempt failed: {e}")
+                logger.error(f"[MQTT CONNECT ERROR] MQTT connection attempt failed: {e}")
         time.sleep(10)
 
 def main():
     # ------------------------------
     # Step 1: Start OPC UA Server
     # ------------------------------
-    logger.info("Starting OPC UA server for sensor connections...")
+    logger.info("[OPC UA SERVER] Initializing OPC UA server for sensor connections...")
     server = Server()
     server.set_endpoint(SERVER_ENDPOINT)
     server.set_server_name(SERVER_NAME)
     nsidx = server.register_namespace(NAMESPACE)
-    logger.info(f"Registered namespace '{NAMESPACE}' with index {nsidx}")
+    logger.info(f"[NAMESPACE REGISTRATION] Registered namespace '{NAMESPACE}' with index {nsidx}")
     objects = server.get_objects_node()
     sensors_folder = objects.add_folder(nsidx, "Sensors")
     temp_var = sensors_folder.add_variable(f"ns={nsidx};s=Temperature", "Temperature", 0.0)
@@ -89,7 +96,7 @@ def main():
     temp_var.set_writable()
     press_var.set_writable()
     server.start()
-    logger.info(f"OPC UA Server started successfully at {SERVER_ENDPOINT}")
+    logger.info(f"[OPC UA SERVER] Started successfully at {SERVER_ENDPOINT}")
 
     # ------------------------------
     # Step 2: Initialize MQTT Client and Start Connection Manager Thread
@@ -97,7 +104,7 @@ def main():
     mqtt_client = create_mqtt_client()
     mqtt_thread = threading.Thread(target=mqtt_connection_manager, args=(mqtt_client,), daemon=True)
     mqtt_thread.start()
-    logger.info("Started MQTT connection manager thread.")
+    logger.info("[MQTT THREAD] MQTT connection manager thread started.")
 
     # ------------------------------
     # Step 3: Main Loop - Publish Only When Sensor Values Change
@@ -110,9 +117,9 @@ def main():
             # Read sensor values from OPC UA server
             temp = temp_var.get_value()
             press = press_var.get_value()
-            logger.info(f"OPC UA sensor values - Temperature: {temp}°C, Pressure: {press} hPa")
+            logger.info(f"[SENSOR DATA] Read OPC UA values - Temperature: {temp}°C, Pressure: {press} hPa")
 
-            # Only publish if values have changed beyond a small threshold
+            # Only publish if values have changed beyond the defined threshold
             publish_update = False
             if last_temp is None or abs(temp - last_temp) > THRESHOLD:
                 publish_update = True
@@ -129,30 +136,30 @@ def main():
                     payload = json.dumps({"temperature": temp, "pressure": press})
                     result = mqtt_client.publish(MQTT_TOPIC, payload)
                     if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                        logger.info(f"Published to MQTT topic '{MQTT_TOPIC}': {payload}")
+                        logger.info(f"[MQTT PUBLISH] Published payload to topic '{MQTT_TOPIC}': {payload}")
                     else:
-                        logger.warning(f"Failed to publish message, result code: {result.rc}")
+                        logger.warning(f"[MQTT PUBLISH ERROR] Failed to publish payload, result code: {result.rc}")
                 else:
-                    logger.info("MQTT not connected, skipping publish.")
+                    logger.info("[MQTT PUBLISH] MQTT not connected; skipping publish for this cycle.")
             else:
-                logger.debug("No significant sensor change detected; not publishing.")
+                logger.debug("[SENSOR DATA] No significant change detected; publish skipped.")
 
             time.sleep(10)
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, shutting down.")
+        logger.info("[SHUTDOWN] KeyboardInterrupt received. Initiating shutdown sequence.")
     finally:
         try:
             mqtt_client.loop_stop()
             if mqtt_client.is_connected():
                 mqtt_client.disconnect()
-                logger.info("MQTT client disconnected.")
+                logger.info("[MQTT DISCONNECT] MQTT client disconnected successfully.")
         except Exception as e:
-            logger.error(f"Error during MQTT disconnect: {e}")
+            logger.error(f"[MQTT DISCONNECT ERROR] Error during MQTT disconnect: {e}")
         try:
             server.stop()
-            logger.info("OPC UA server stopped.")
+            logger.info("[OPC UA SERVER] OPC UA server stopped successfully.")
         except Exception as e:
-            logger.error(f"Error stopping OPC UA server: {e}")
+            logger.error(f"[OPC UA STOP ERROR] Error stopping OPC UA server: {e}")
 
 if __name__ == "__main__":
     main()

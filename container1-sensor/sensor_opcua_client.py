@@ -4,9 +4,12 @@ import logging
 from opcua import Client
 from opcua import ua
 
-# Configure logging
+# Configure logging for our application
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Suppress natural logs from the OPC UA library
+logging.getLogger("opcua").setLevel(logging.CRITICAL)
 
 # OPC UA server settings (Container 2)
 OPCUA_SERVER_URL = "opc.tcp://container2-gateway:4840"  # Container name from opcua.yml
@@ -28,63 +31,64 @@ def generate_sensor_data():
 def main():
     # Initialize OPC UA client
     client = Client(OPCUA_SERVER_URL)
-    
+
     # Connection retry loop
     connected = False
     while not connected:
         try:
-            logger.info(f"Attempting to connect to OPC UA server at {OPCUA_SERVER_URL}")
+            logger.info(f"[OPC UA CONNECT] Connecting to server at {OPCUA_SERVER_URL}")
             client.connect()
             connected = True
-            logger.info("Connected to OPC UA server")
+            logger.info("[OPC UA CONNECT] Connection established successfully")
         except Exception as e:
-            logger.error(f"Failed to connect to OPC UA server: {e}")
-            logger.info("Retrying in 10 seconds...")
+            logger.error(f"[OPC UA CONNECT] Connection failed: {e}")
+            logger.info("[OPC UA CONNECT] Retrying in 10 seconds...")
             time.sleep(10)
-    
+
     try:
         # Get the namespace index
         nsidx = client.get_namespace_index(NAMESPACE)
-        logger.info(f"Namespace index for {NAMESPACE}: {nsidx}")
-        
+        logger.info(f"[NAMESPACE] '{NAMESPACE}' resolved with index {nsidx}")
+
         # Get the node objects
         temp_node = client.get_node(f"ns={nsidx};s=Temperature")
         press_node = client.get_node(f"ns={nsidx};s=Pressure")
-        
-        logger.info("Starting sensor data generation loop")
-        
-        # Main loop to generate and send data
+
+        logger.info("[DATA LOOP] Starting sensor data generation loop")
+
+        # Main loop to generate and send sensor data
         while True:
             try:
-                # Generate random sensor values
+                # Generate sensor data
                 temp, press = generate_sensor_data()
-                
-                # Write values to OPC UA server
+
+                # Write sensor values to the OPC UA server
                 temp_node.set_value(ua.DataValue(ua.Variant(temp, ua.VariantType.Float)))
                 press_node.set_value(ua.DataValue(ua.Variant(press, ua.VariantType.Float)))
-                
-                logger.info(f"Sent data - Temperature: {temp}°C, Pressure: {press} hPa")
-                
-                # Wait for the specified interval
+
+                logger.info(f"[DATA SENT] Temperature: {temp}°C, Pressure: {press} hPa")
+
+                # Wait for the specified interval before next transmission
                 time.sleep(SAMPLE_INTERVAL)
-                
+
             except Exception as e:
-                logger.error(f"Error during data transmission: {e}")
+                logger.error(f"[DATA ERROR] Error during data transmission: {e}")
+                # Check if the underlying connection is lost and attempt reconnection
                 if not client.uaclient._uasocket.is_open():
-                    logger.error("Connection lost. Attempting to reconnect...")
+                    logger.error("[RECONNECT] Connection lost, attempting to reconnect...")
                     client.disconnect()
                     time.sleep(5)
                     client.connect()
-                    logger.info("Reconnected to OPC UA server")
-    
+                    logger.info("[RECONNECT] Reconnected to OPC UA server successfully")
+
     except Exception as e:
-        logger.error(f"Error: {e}")
-    
+        logger.error(f"[GENERAL ERROR] {e}")
+
     finally:
-        # Disconnect client
+        # Disconnect the OPC UA client if connected
         if connected:
             client.disconnect()
-            logger.info("Disconnected from OPC UA server")
+            logger.info("[DISCONNECT] Disconnected from OPC UA server")
 
 if __name__ == "__main__":
     main()
