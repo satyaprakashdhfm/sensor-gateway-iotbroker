@@ -115,6 +115,7 @@ def main():
     try:
         while True:
             # Read sensor values from OPC UA server
+            # The get_value() method reads the value of the OPC UA variable node.
             temp = temp_var.get_value()
             press = press_var.get_value()
             logger.info(f"[SENSOR DATA] Read OPC UA values - Temperature: {temp}°C, Pressure: {press} hPa")
